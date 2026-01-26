@@ -30,6 +30,7 @@ def train_env_builder(seed, rank=0):
             frame_skip=25,
             max_episode_steps=1000,
             render_mode="rgb_array",
+            camera_name="tracking"
         )
         env.reset(seed=seed+rank)
         return env

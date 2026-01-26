@@ -14,5 +14,3 @@ We test our newly trained policy over
 """
 import gymnasium as gym
 from stable_baselines3 import PPO
-
-env = 

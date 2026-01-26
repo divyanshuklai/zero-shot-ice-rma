@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13.11"
 dependencies = [
-    "gymnasium[mujoco]>=1.2.3",
+    "gymnasium[mujoco,other]>=1.2.3",
     "mujoco>=3.4.0",
     "stable-baselines3[extra]>=2.7.1",
     "tensorboard>=2.20.0",

@@ -26,11 +26,11 @@ obs, info = env.reset()
 episode_over = False
 step = 0
 while not episode_over:
-    action = np.zeros((8,))
-    obs, reward, episode_over, info = env.step(action)
+    action = np.zeros(env.action_space.shape)
+    obs, reward, terminated, truncated, info = env.step(action)
     step += 1
-    if step >= 1000:
+    if step >= 1000 or truncated or terminated:
         episode_over = True
     env.render()
-    sleep(1/60)
-
+    sleep(1)
+env.close()
