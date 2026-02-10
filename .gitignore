@@ -13,3 +13,7 @@ models/
 
 #generated files
 MUJOCO*
+
+#scripts
+fractal_gen.py
+unitree_go1_fractal
