@@ -8,7 +8,9 @@ import numpy as np
 def build_eval_env(friction, seed):
     from environment import build_environment
 
-    env = build_environment()
+    env = build_environment(
+        flat=True
+    )
 
     #change conditions to icy (change sliding friction of floor(id:0))
     env.unwrapped.model.geom_friction[0][0] = friction
@@ -57,18 +59,16 @@ def main():
     
     os.makedirs(results_path, exist_ok=True)
 
-    agent = PPO.load(model_path, device="cpu")
-    vec_env = None
+
+    env = build_eval_env(args.friction, args.seed)
+    env = RecordEpisodeStatistics(env, buffer_length=args.num_episodes)
+    
+    agent = PPO.load(model_path, env, device="cpu")
+    vec_env = agent.get_env()
+
+    episodes = {}
 
     if not args.exclude_stats:
-        env = build_eval_env(args.friction, args.seed)
-        env = RecordEpisodeStatistics(env, buffer_length=args.num_episodes)
-        
-        agent.set_env(env)
-        vec_env = agent.get_env()
-
-        episodes = {}
-
         #eval
         for episode_num in range(args.num_episodes):
             obs = vec_env.reset()
@@ -147,8 +147,7 @@ def main():
             print('Success rate: N/A')
 
     video_env.close()
-    if vec_env:
-        vec_env.close()
+    vec_env.close()
 
 if __name__ == "__main__":
     main()

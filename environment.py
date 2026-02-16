@@ -9,13 +9,25 @@ import numpy as np
 from copy import copy
 
 class reward_scheduler:
-    def __init__(self, init_k=0.03, scaling_function : function=None):
+    def __init__(self, init_k=0.03, exponent=0.997, scaling_function : function =None):
+        """
+        Customise and schedule rewards. k will increase with k_t+1 = k_t ** exponent.
+        scaling function can be customised, None is default RMA scaling
+        with rewards[2:] (3 to 10) being scaled by a factor of k.
+        return a single double as a reward.
+        
+        :param init_k: initial k value. (k0), supply 0 < k < 1 
+        :param exponent: value to increase k by. use 0 < exponent < 1 
+        :param scaling_function: given scaled rewards vector and k return a single number.
+        :type scaling_function:
+        """
         self.k = init_k
+        self.exponent = exponent
         self.scaler = scaling_function if scaling_function is not None else self.rma_scaler
     
     def __call__(self, reward):
         reward = self.scaler(reward, self.k)
-        self.k = self.k**0.997
+        self.k = self.k**self.exponent
         return reward
 
     @staticmethod
@@ -24,6 +36,7 @@ class reward_scheduler:
         return np.sum(reward) 
     
 def build_environment(
+        flat : bool = False,
         reward_scheduling : reward_scheduler=None,
         randomize_domain : bool=False, 
         randomization_params : dict=None, 
@@ -31,6 +44,8 @@ def build_environment(
         render_mode="rgb_array"
 ):
     
+    xml_file = f"./mujoco_menagerie/unitree_go1{"_fractal" if not flat else ""}/scene.xml"
+
     if reward_scheduling is None:
         reward_scheduling = reward_scheduler(
             scaling_function=lambda reward, *args : np.sum(reward)
@@ -39,7 +54,7 @@ def build_environment(
     #taken from https://gymnasium.farama.org/tutorials/gymnasium_basics/load_quadruped_model/
     env = gym.make(
         "Ant-v5",
-        xml_file="./mujoco_menagerie/unitree_go1_fractal/scene.xml",
+        xml_file=xml_file,
         forward_reward_weight=1,
         ctrl_cost_weight=0.05,
         contact_cost_weight=5e-4,
@@ -49,7 +64,7 @@ def build_environment(
         include_cfrc_ext_in_observation=True,
         exclude_current_positions_from_observation=False,
         reset_noise_scale=0.1,
-        frame_skip=25,
+        frame_skip=5,
         max_episode_steps=1000,
         render_mode=render_mode,  # Change to "human" to visualize
         camera_name="tracking"
@@ -88,7 +103,8 @@ class RMAEnv(Wrapper):
             low=-np.inf,
             high=np.inf,
             shape=(30,),
-            dtype=np.float64
+            dtype=np.float64,
+            seed=seed,
         )
 
 
@@ -367,13 +383,13 @@ class RMAEnv(Wrapper):
 
 if __name__ == "__main__":
     from pprint import pprint
-    env = build_environment()
+    env = build_environment(reward_scheduling=reward_scheduler())
     obs0, info = env.reset()
     action = env.action_space.sample()
     obs1, reward, _, _, info = env.step(action)
-    pprint(obs0.shape)
-    pprint(action.shape)
-    pprint(obs1.shape)
+    pprint(obs0)
+    pprint(action)
+    pprint(obs1)
     pprint(reward)
     pprint(f"obs space :  {env.observation_space}")
     
