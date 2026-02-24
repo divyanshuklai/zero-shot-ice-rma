@@ -36,6 +36,7 @@ DEFAULTS = dict(
     record_video=True,
     deterministic=True,
     results_name="",
+    log_dir=".",
 )
 
 
@@ -54,7 +55,7 @@ def get_default_results_name(model_name: str, args_dict: dict) -> str:
 
     suffix = "_".join(tags)
 
-    evals_dir = "evals"
+    evals_dir = os.path.join(args_dict.get("log_dir", "."), "evals")
     os.makedirs(evals_dir, exist_ok=True)
     existing = [
         d for d in os.listdir(evals_dir)
@@ -96,6 +97,8 @@ def parse_args():
                         help="Use deterministic actions during evaluation")
     parser.add_argument("--results-name", type=str, default=DEFAULTS["results_name"],
                         help="Results folder name (auto-generated if empty)")
+    parser.add_argument("--log-dir", type=str, default=DEFAULTS["log_dir"],
+                        help="Base directory for evals/ output")
 
     args = parser.parse_args()
 
@@ -113,6 +116,7 @@ def parse_args():
             "record_video": args.record_video,
             "deterministic": args.deterministic,
             "results_name": args.results_name,
+            "log_dir": args.log_dir,
         }
         args.results_name = get_default_results_name(args.model_name, args_dict)
 
@@ -182,7 +186,8 @@ def main():
     args = parse_args()
     set_random_seed(args.seed)
 
-    results_dir = os.path.join("evals", args.results_name)
+    evals_dir = os.path.join(args.log_dir, "evals")
+    results_dir = os.path.join(evals_dir, args.results_name)
     os.makedirs(results_dir, exist_ok=True)
 
     # Save eval config

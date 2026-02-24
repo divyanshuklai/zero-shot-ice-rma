@@ -41,7 +41,7 @@ def get_default_model_name(args_dict, defaults_dict):
     suffix = "_".join([dr_tag] + changed_params) if changed_params else dr_tag
     
     # Count existing runs today
-    evals_dir = "runs"
+    evals_dir = os.path.join(args_dict.get("log_dir", "."), "runs")
     os.makedirs(evals_dir, exist_ok=True)
     existing = [
         d for d in os.listdir(evals_dir)
@@ -73,6 +73,7 @@ DEFAULTS = dict(
     flat=True,
     dr=False,
     model_name="",
+    log_dir=".",
 )
 
 
@@ -102,6 +103,7 @@ def parse_args():
     parser.add_argument("--flat", action=argparse.BooleanOptionalAction, default=DEFAULTS["flat"], help="Use flat terrain (--flat / --no-flat)")
     parser.add_argument("--dr", action=argparse.BooleanOptionalAction, default=DEFAULTS["dr"], help="Enable RMA domain randomization (--dr / --no-dr)")
     parser.add_argument("--model-name", type=str, default=DEFAULTS["model_name"], help="Model name (auto-generated if empty)")
+    parser.add_argument("--log-dir", type=str, default=DEFAULTS["log_dir"], help="Base directory for runs/ and models/ output")
 
     args = parser.parse_args()
 
@@ -127,6 +129,7 @@ def parse_args():
         "flat": args.flat,
         "dr": args.dr,
         "model_name": args.model_name,
+        "log_dir": args.log_dir,
     }
 
     if not args.model_name:
@@ -162,9 +165,11 @@ def main():
     total_timesteps = args.n_iterations * args.batch_size_total
     minibatch_size = args.batch_size_total // args.n_minibatches
 
-    logging_dir = os.path.join("runs", args.model_name)
+    runs_dir = os.path.join(args.log_dir, "runs")
+    models_dir = os.path.join(args.log_dir, "models")
+    logging_dir = os.path.join(runs_dir, args.model_name)
     os.makedirs(logging_dir, exist_ok=True)
-    os.makedirs("models", exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
 
     with open(os.path.join(logging_dir, "config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
@@ -209,7 +214,7 @@ def main():
             AverageStepRewardCallback(),
         ],
     )
-    agent.save(f"models/{args.model_name}.zip")
+    agent.save(os.path.join(models_dir, f"{args.model_name}.zip"))
     vec_env.close()
 
 if __name__ == "__main__":
