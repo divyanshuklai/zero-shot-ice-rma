@@ -11,26 +11,12 @@ from typing import Callable
 
 class reward_scheduler:
     def __init__(self, init_k=0.03, exponent=0.997, scaling_function : Callable =None):
-        """
-        Customise and schedule rewards. k will increase with k_t+1 = k_t ** exponent.
-        scaling function can be customised, None is default RMA scaling
-        with rewards[2:] (3 to 10) being scaled by a factor of k.
-        return a single double as a reward.
-        
-        :param init_k: initial k value. (k0), supply 0 < k < 1 
-        :param exponent: value to increase k by. use 0 < exponent < 1 
-        :param scaling_function: given scaled rewards vector and k return a single number.
-        :type scaling_function:
-        """
         self.k = init_k
         self.exponent = exponent
         self.scaler = scaling_function if scaling_function is not None else self.rma_scaler
     
     def __call__(self, reward):
         return self.scaler(reward, self.k)
-
-    def step_schedule(self):
-        self.k = self.k ** self.exponent 
 
     @staticmethod
     def rma_scaler(reward, k):

@@ -10,6 +10,7 @@ wheels/
 .venv
 evals/
 models/
+runs/
 
 #generated files
 MUJOCO*

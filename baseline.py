@@ -6,22 +6,42 @@ import gymnasium as gym
 from environment import build_environment, reward_scheduler
 from callbacks import ClampLogStdCallback, RewardScheduleCallback, AverageStepRewardCallback
 
+# Go1 nominal PD gains
+BASE_KP = 100
+BASE_KD = 2
+
+# RMA paper domain randomization config (scaled for Go1)
+TRAIN_CONFIG = {
+    'resample_probability': 0.004,  # Resample every ~250 steps
+    'friction': [0.05, 4.5],        # Sliding friction coefficient
+    'payload': [0.0, 6.0],          # Added mass in kg (Max ~50% body weight)
+    'com': [-0.15, 0.15],           # Center of Mass displacement (meters)
+    'motor_strength': [0.90, 1.10], # Torque multiplier (90% to 110%)
+
+    # Scaled to Go1 Base Kp=100 (Paper used 55 +/- 5)
+    'Kp': [BASE_KP * 0.9, BASE_KP * 1.1],  # [90, 110]
+
+    # Scaled to Go1 Base Kd=2 (Paper used 0.6 +/- 0.2)
+    'Kd': [BASE_KD * 0.67, BASE_KD * 1.33]  # [1.3, 2.7]
+}
+
 def get_default_model_name(args_dict, defaults_dict):
     """Generate model name as <#run>_DDMMYY_<params_changed>"""
     date_str = datetime.now().strftime("%d%m%y")
     
     changed_params = []
-    skip_keys = {"model_name"}
+    skip_keys = {"model_name", "dr"}
     for key, default_val in defaults_dict.items():
         if key in skip_keys:
             continue
         if args_dict.get(key) != default_val:
             changed_params.append(f"{key}_{args_dict[key]}")
     
-    suffix = "_".join(changed_params) if changed_params else "default"
+    dr_tag = "yes_dr" if args_dict.get("dr") else "no_dr"
+    suffix = "_".join([dr_tag] + changed_params) if changed_params else dr_tag
     
     # Count existing runs today
-    evals_dir = "evals"
+    evals_dir = "runs"
     os.makedirs(evals_dir, exist_ok=True)
     existing = [
         d for d in os.listdir(evals_dir)
@@ -29,13 +49,13 @@ def get_default_model_name(args_dict, defaults_dict):
     ]
     run_number = len(existing) + 1
     
-    return f"{run_number}_{date_str}_{suffix}"
+    return f"baseline_no_extrinsic_{run_number}_{date_str}_{suffix}"
 
 
 DEFAULTS = dict(
     seed=42,
-    n_iterations=1000,
-    batch_size_total=8_000,
+    n_iterations=100,
+    batch_size_total=80_000,
     n_minibatches=4,
     n_epochs=4,
     n_envs=40,
@@ -51,6 +71,7 @@ DEFAULTS = dict(
     init_k=0.03,
     exponent=0.997,
     flat=True,
+    dr=False,
     model_name="",
 )
 
@@ -79,6 +100,7 @@ def parse_args():
     parser.add_argument("--init-k", type=float, default=DEFAULTS["init_k"], help="Initial k for reward scheduling")
     parser.add_argument("--exponent", type=float, default=DEFAULTS["exponent"], help="Exponent for reward scheduling")
     parser.add_argument("--flat", action=argparse.BooleanOptionalAction, default=DEFAULTS["flat"], help="Use flat terrain (--flat / --no-flat)")
+    parser.add_argument("--dr", action=argparse.BooleanOptionalAction, default=DEFAULTS["dr"], help="Enable RMA domain randomization (--dr / --no-dr)")
     parser.add_argument("--model-name", type=str, default=DEFAULTS["model_name"], help="Model name (auto-generated if empty)")
 
     args = parser.parse_args()
@@ -103,6 +125,7 @@ def parse_args():
         "init_k": args.init_k,
         "exponent": args.exponent,
         "flat": args.flat,
+        "dr": args.dr,
         "model_name": args.model_name,
     }
 
@@ -119,7 +142,9 @@ def train_env_builder(args, rank=0):
             reward_scheduling=reward_scheduler(
                 init_k=args.init_k,
                 exponent=args.exponent
-            )
+            ),
+            randomize_domain=args.dr,
+            randomization_params=TRAIN_CONFIG if args.dr else None,
         )
         env.reset(seed=args.seed+rank)
         return env
@@ -137,7 +162,7 @@ def main():
     total_timesteps = args.n_iterations * args.batch_size_total
     minibatch_size = args.batch_size_total // args.n_minibatches
 
-    logging_dir = os.path.join("evals", args.model_name)
+    logging_dir = os.path.join("runs", args.model_name)
     os.makedirs(logging_dir, exist_ok=True)
     os.makedirs("models", exist_ok=True)
 
@@ -170,14 +195,14 @@ def main():
         gamma=args.gamma,
         learning_rate=args.learning_rate,
         policy_kwargs=policy_kwargs,
-        tensorboard_log="evals",
+        tensorboard_log=logging_dir,
         seed=args.seed,
     )
 
     agent.learn(
         total_timesteps=total_timesteps,
         progress_bar=True,
-        tb_log_name=args.model_name,
+        tb_log_name="PPO",
         callback=[
             ClampLogStdCallback(min_std=args.min_std),
             RewardScheduleCallback(init_k=args.init_k, exponent=args.exponent),
