@@ -7,9 +7,10 @@ import gymnasium as gym
 from gymnasium import Wrapper
 import numpy as np
 from copy import copy
+from typing import Callable
 
 class reward_scheduler:
-    def __init__(self, init_k=0.03, exponent=0.997, scaling_function : function =None):
+    def __init__(self, init_k=0.03, exponent=0.997, scaling_function : Callable =None):
         """
         Customise and schedule rewards. k will increase with k_t+1 = k_t ** exponent.
         scaling function can be customised, None is default RMA scaling
@@ -26,14 +27,16 @@ class reward_scheduler:
         self.scaler = scaling_function if scaling_function is not None else self.rma_scaler
     
     def __call__(self, reward):
-        reward = self.scaler(reward, self.k)
-        self.k = self.k**self.exponent
-        return reward
+        return self.scaler(reward, self.k)
+
+    def step_schedule(self):
+        self.k = self.k ** self.exponent 
 
     @staticmethod
     def rma_scaler(reward, k):
         reward[2:] *= k
-        return np.sum(reward) 
+        return np.sum(reward)
+
     
 def build_environment(
         flat : bool = False,
@@ -89,7 +92,7 @@ class RMAEnv(Wrapper):
                  seed : int = 42,
     ):
         """
-        outputs observation state $x_t \in \mathbb{R}^30$
+        outputs observation state R30
         takes in action vector of target joint positions $a_t \in \mathbb{R}^12$ 
 
         rewards are given as a tuple of 10
@@ -98,6 +101,16 @@ class RMAEnv(Wrapper):
         :param env: Description
         """
         super().__init__(env)
+
+        #normalize action over standing position
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(12,), dtype=np.float32, seed=seed
+        )
+
+        #nominal standing pose (Abduction, Hip, Knee) * 4
+        self.nominal_qpos = np.array([0.0, 0.9, -1.8] * 4)
+        #max deviation (radian)
+        self.action_scale = 0.25
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
@@ -108,58 +121,69 @@ class RMAEnv(Wrapper):
         )
 
 
-        self.target_reward_scaling = np.array([ #reward scaling based on the RMA paper
-            20,     # 1.forward
-            21,     # 2.lateral movement and rotation
-            0.002,  # 3.work
-            0.02,   # 4.ground impact
-            0.001,  # 5.smoothness
-            0.07,   # 6.action magnitude
-            0.002,  # 7.joint speed
-            1.5,    # 8.orientation
-            2.0,    # 9.z acceleration
-            0.8     # 10.foot slip
-        ])
+        self.target_reward_scaling = np.array([
+            20, 21, 0.002, 0.02, 0.001, 0.07, 0.002, 1.5, 2.0, 0.8
+        ]) #from RMA paper
 
         foot_names = [
-            "FR_calf", 
-            "FL_calf", 
-            "RR_calf", 
-            "RL_calf"
+            "FR_calf", "FL_calf", "RR_calf", "RL_calf"
         ]
 
-        self.foot_ids = [env.unwrapped.model.body(name).id for name in foot_names]
+        #correspond to mujoco env(0 is ground, 1 is trunk)
+        self.foot_ids = [
+            env.unwrapped.model.body(name).id for name in foot_names
+        ]
         self.trunk_id = env.unwrapped.model.body("trunk").id 
 
         self._obs_hist = {
-            'last_joint_ang' : np.zeros(env.action_space.shape),
-            'last_torque' : np.zeros(env.action_space.shape),
-            'last_grnd_cfrc_ext' : np.zeros((len(self.foot_ids), 6))
+            'last_joint_ang' : np.zeros(12),
+            'last_torque' : np.zeros(12),
+            'last_grnd_cfrc_ext' : np.zeros((4, 6))
+        }
+
+        self._env_params = {
+            'friction': copy(env.unwrapped.model.geom_friction[:, 0]),
+            'Kp': copy(env.unwrapped.model.actuator_gainprm[:, 0]),
+            'Kd': copy(env.unwrapped.model.dof_damping[6:]),
+            'mass': copy(env.unwrapped.model.body_mass),
+            'com': copy(env.unwrapped.model.body_ipos[self.trunk_id])
         }
 
         self.reward_scheduling = reward_scheduling
+        self.randomize_domain = randomize_domain
+        self.randomization_parameters = randomization_parameters
 
     def step(self, action):
-        obs, old_reward, terminated, truncated, info = self.env.step(action)
+        """
+        - recieve normalized action vector in [-1, 1] and convert it to target joint positions.
+        - reward is calculated as per RMA paper, then aggregated as per reward scheduler
+        - domain randomization can be done for friction, Kp, Kd, payload, com and resample_probability.
+        """
+        if self.randomize_domain and self.randomization_parameters.get('resample_probability', None) is not None:
+            if np.random.random() < self.randomization_parameters['resample_probability']:
+                self._apply_domain_randomization()
+
+        target_qpos = self.nominal_qpos + (action * self.action_scale)
+
+        obs, old_reward, terminated, truncated, info = self.env.step(target_qpos)
 
         # slicing observation for proprioception
-        # part 1: qpos
+        # qpos
         root_pos = obs[:3]
         root_quat = obs[3:7]
         joint_ang = obs[7:19]
-        # part 2: qvel 
+        # qvel 
         root_lin_vel = obs[19:22]
         root_ang_vel = obs[22:25]
         joint_vel = obs[25:37]
-        # part 3: crfc_ext 13 bodies * 6D vector (3 torque, 3 linear)
+        # crfc_ext 13 bodies * 6D vector (3 torque, 3 linear)
         cfrc_ext = obs[37:]
 
-        # ground contact forces
         grnd_cfrc_ext = copy(self.env.unwrapped.data.cfrc_ext[self.foot_ids])
-        # calculate torque
-        cur_torque = self.calculate_torque(action)
-        # calculate grav_vec
-        grav_vec = self.calculate_gravity_vector(root_quat)
+        # read torque from env
+        cur_torque = np.copy(self.env.unwrapped.data.actuator_force)
+        # calculate gravity vector of the trunk
+        grav_vec = self._calculate_gravity_vector(root_quat)
         # calculate foot velocities
         feet_vel = copy(self.env.unwrapped.data.cvel[self.foot_ids][:, 3:])
 
@@ -202,6 +226,12 @@ class RMAEnv(Wrapper):
         
 
     def reset(self, *, seed = None, options = None):
+
+        #randomize domain
+        if self.randomize_domain:
+            self._apply_domain_randomization()
+
+        #reset environment
         obs, info = super().reset(seed=seed, options=options)
 
         root_pos = obs[:3]
@@ -214,10 +244,10 @@ class RMAEnv(Wrapper):
 
         # ground contact forces
         grnd_cfrc_ext = copy(self.env.unwrapped.data.cfrc_ext[self.foot_ids])
-        # calculate torque
-        cur_torque = self.calculate_torque(np.zeros(self.env.action_space.shape))
+        # read torque
+        cur_torque = np.copy(self.env.unwrapped.data.actuator_force)
         # calculate grav_vec
-        grav_vec = self.calculate_gravity_vector(root_quat)
+        grav_vec = self._calculate_gravity_vector(root_quat)
         # calculate foot velocities
         feet_vel = copy(self.env.unwrapped.data.cvel[self.foot_ids][:, 3:])
 
@@ -254,7 +284,7 @@ class RMAEnv(Wrapper):
             grnd_cfrc_ext,
             grav_vec,
             feet_vel,
-    ) -> tuple[float]:
+    ) -> float:
         #1
         forward_reward = (
             min(root_lin_vel[0], 0.35)    
@@ -302,7 +332,7 @@ class RMAEnv(Wrapper):
         #8
         orientation_penalty = (
             -1
-            * np.sum(grav_vec[...,:2]**2, axis=-1)
+            * np.sum(grav_vec[:2]**2, axis=-1)
         )
         #9
         z_acc_penalty = (
@@ -310,7 +340,7 @@ class RMAEnv(Wrapper):
             * root_lin_vel[2] ** 2
         )
         #10
-        g = (np.sum(grnd_cfrc_ext, axis=-1) > 0).astype(np.float64)
+        g = (np.linalg.norm(grnd_cfrc_ext[:, 3:], axis=-1) > 0).astype(np.float64)
         foot_slip_penalty = (
             -1
             * np.linalg.norm(
@@ -332,23 +362,40 @@ class RMAEnv(Wrapper):
         ))
 
         return self.reward_scheduling(reward)
-        
-    def calculate_torque(self, qpost):
-        """
-        PD Controller
-        
-        :param self: Description
-        :param qpost: Description
-        """
-        Kp = self.env.unwrapped.model.actuator_gainprm[:, 0]
-        Kd = self.env.unwrapped.model.dof_damping[6:]
-        qvel = self.env.unwrapped.data.qvel[6:]
-        qvelt = 0.0
-        qpos =  self.env.unwrapped.data.qpos[7:]
-        return Kp * (qpost - qpos) + Kd * (qvelt - qvel)
     
+
+    def _apply_domain_randomization(self):
+        model = self.env.unwrapped.model
+
+        if 'friction' in self.randomization_parameters:
+            low, high = self.randomization_parameters['friction']
+            model.geom_friction[:, 0] = self._env_params['friction'] * np.random.uniform(low, high)
+
+        if 'Kp' in self.randomization_parameters:
+            low, high = self.randomization_parameters['Kp']
+            new_gainprm = self._env_params['Kp'] * np.random.uniform(low, high, size=12)
+            model.actuator_gainprm[:, 0] = new_gainprm
+
+        if 'Kd' in self.randomization_parameters:
+            low, high = self.randomization_parameters['Kd']
+            model.dof_damping[6:] = self._env_params['Kd'] * np.random.uniform(low, high, size=12)
+
+        if 'payload' in self.randomization_parameters:
+            low, high = self.randomization_parameters['payload']
+            new_body_mass = copy(self._env_params['mass'])
+            new_body_mass[self.trunk_id] += np.random.uniform(low, high)
+            model.body_mass[:] = new_body_mass
+
+        if 'com' in self.randomization_parameters:
+            low, high = self.randomization_parameters['com']
+            com = self._env_params['com'] + np.random.uniform(low, high, size=3)
+            model.body_ipos[self.trunk_id] = com
+
+    def set_reward_k(self, k: float):
+        self.reward_scheduling.k = k
+
     @staticmethod
-    def calculate_gravity_vector(quaternion):
+    def _calculate_gravity_vector(quaternion):
         # def H(quat1, quat2):
         #     """
         #     ref: https://en.wikipedia.org/wiki/Quaternion#Hamilton_product
@@ -380,6 +427,8 @@ class RMAEnv(Wrapper):
         gy = -2 * (x * w + y * z)
         gz = -(1 - 2 * (x**2 + y**2))
         return np.array([gx, gy, gz])
+    
+
 
 if __name__ == "__main__":
     from pprint import pprint
