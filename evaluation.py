@@ -1,5 +1,5 @@
 """
-evaluation.py – Evaluate a trained policy under (optionally) domain-randomized
+evaluation.py - Evaluate a trained policy under (optionally) domain-randomized
 conditions.  Structured like baseline.py: argparse, config dict, stats tracking
 and saving, optional DR via TEST_CONFIG.  No reward scheduling.
 """

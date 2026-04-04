@@ -28,6 +28,15 @@ TRAIN_CONFIG = {
 def get_default_model_name(args_dict, defaults_dict):
     """Generate model name as <#run>_DDMMYY_<params_changed>"""
     date_str = datetime.now().strftime("%d%m%y")
+
+    def _safe(v):
+        return (
+            str(v)
+            .replace("/", "-")
+            .replace("\\", "-")
+            .replace(" ", "")
+            .replace(":", "-")
+        )
     
     changed_params = []
     skip_keys = {"model_name", "dr"}
@@ -35,7 +44,7 @@ def get_default_model_name(args_dict, defaults_dict):
         if key in skip_keys:
             continue
         if args_dict.get(key) != default_val:
-            changed_params.append(f"{key}_{args_dict[key]}")
+            changed_params.append(f"{key}_{_safe(args_dict[key])}")
     
     dr_tag = "yes_dr" if args_dict.get("dr") else "no_dr"
     suffix = "_".join([dr_tag] + changed_params) if changed_params else dr_tag
