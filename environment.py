@@ -101,7 +101,7 @@ class RMAEnv(Wrapper):
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(30,),
+            shape=(42,),
             dtype=np.float64,
             seed=seed,
         )
@@ -239,12 +239,15 @@ class RMAEnv(Wrapper):
         grav_vec = self._calculate_gravity_vector(root_quat)
         # calculate foot velocities
         feet_vel = copy(self.env.unwrapped.data.cvel[self.foot_ids][:, 3:])
+        # zero init last_action
+        self.last_action = np.zeros(12, dtype=np.float32)
 
         obs = np.concat([
             grav_vec,       # 3
             root_ang_vel,   # 3
             joint_ang,      # 12
-            joint_vel       # 12
+            joint_vel,      # 12
+            self.last_action 
         ],)
 
         info.update({
