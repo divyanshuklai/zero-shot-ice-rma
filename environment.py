@@ -185,6 +185,9 @@ class RMAEnv(Wrapper):
             feet_vel
         )
 
+        self.last_action = action.copy()
+
+
         # RMA observations consist of 
         # (gravity_vec:3, root_ang_vel:3, joint_pos:12, joint_vel:12, last_action:12)
         obs = np.concat([
@@ -195,7 +198,6 @@ class RMAEnv(Wrapper):
             self.last_action
         ])
 
-        self.last_action = action.copy()
 
         info.update({
             'root_pos' : root_pos,
@@ -247,7 +249,7 @@ class RMAEnv(Wrapper):
             root_ang_vel,   # 3
             joint_ang,      # 12
             joint_vel,      # 12
-            self.last_action 
+            self.last_action # 12
         ],)
 
         info.update({
