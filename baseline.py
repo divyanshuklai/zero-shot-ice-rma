@@ -164,7 +164,7 @@ def train_env_builder(args, rank=0):
 
 def main():
     from stable_baselines3 import PPO
-    from stable_baselines3.common.vec_env import SubprocVecEnv
+    from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
     from stable_baselines3.common.utils import set_random_seed
 
     args = parse_args()
@@ -184,6 +184,7 @@ def main():
         json.dump(vars(args), f, indent=2)
 
     vec_env = SubprocVecEnv([train_env_builder(args, env_n) for env_n in range(args.n_envs)])
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
     policy_kwargs = dict(
         optimizer_class=torch.optim.Adam,

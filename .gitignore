@@ -17,6 +17,13 @@ runs/
 #generated files
 MUJOCO*
 
+#throwaway file
+loss_rma*
+RMA*
+
+test.ipynb
+
 #scripts
-fractal_gen.py
-unitree_go1_fractal
+# fractal_gen.py
+# unitree_go1_fractal
+
