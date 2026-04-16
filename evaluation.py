@@ -1,7 +1,6 @@
 """
 evaluation.py - Evaluate a trained policy under (optionally) domain-randomized
-conditions.  Structured like baseline.py: argparse, config dict, stats tracking
-and saving, optional DR via TEST_CONFIG.  No reward scheduling.
+conditions. optional DR via TEST_CONFIG.  No reward scheduling.
 """
 import os
 import json
@@ -10,11 +9,11 @@ from datetime import datetime
 
 from environment import build_environment, reward_scheduler
 
-# ── Go1 nominal PD gains ────────────────────────────────────────────────────
+# Unitree Go1 Nominal PD Gains
 BASE_KP = 100
 BASE_KD = 2
 
-# ── Wider-than-training DR for stress testing ───────────────────────────────
+
 TEST_CONFIG = {
     'resample_probability': 0.01,            # Resample every ~100 steps
     'friction': [0.04, 6.0],                 # Wider friction range
@@ -25,7 +24,6 @@ TEST_CONFIG = {
     'Kd': [BASE_KD * 0.5, BASE_KD * 1.5],   # [1.0, 3.0]
 }
 
-# ── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULTS = dict(
     seed=42,
     num_episodes=100,

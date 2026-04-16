@@ -6,8 +6,8 @@ from __future__ import annotations
 import gymnasium as gym
 from gymnasium import Wrapper
 import numpy as np
-from copy import copy
 from typing import Callable
+import numba
 
 class reward_scheduler:
     def __init__(self, init_k=0.03, exponent=0.997, scaling_function : Callable =None):
@@ -69,6 +69,68 @@ def build_environment(
 
     return env
 
+@numba.njit
+def _compute_reward_components(
+    action,
+    root_lin_vel,
+    root_ang_vel,
+    joint_ang,
+    joint_vel,
+    cur_torque,
+    grnd_cfrc_ext,
+    grav_vec,
+    feet_vel,
+    last_joint_ang,
+    last_grnd_cfrc_ext,
+    last_torque,
+    target_reward_scaling
+):
+    #1
+    forward_reward = min(root_lin_vel[0], 0.35) * target_reward_scaling[0]
+    #2
+    lat_mvmt_rot_penalty = -1.0 * (root_lin_vel[1]**2 + root_ang_vel[2]**2) * target_reward_scaling[1]
+    #3
+    work_penalty = -1.0 * np.abs(np.dot(cur_torque, (joint_ang - last_joint_ang))) * target_reward_scaling[2]
+    #4
+    ground_impact_penalty = -1.0 * np.sum((grnd_cfrc_ext - last_grnd_cfrc_ext)**2) * target_reward_scaling[3]
+    #5
+    smoothness_penalty = -1.0 * np.sum((cur_torque - last_torque)**2) * target_reward_scaling[4]
+    #6
+    action_magnitude_penalty = -1.0 * np.sum(action**2) * target_reward_scaling[5]
+    #7
+    joint_speed_penalty = -1.0 * np.sum(joint_vel**2) * target_reward_scaling[6]
+    #8
+    orientation_penalty = -1.0 * np.sum(grav_vec[:2]**2) * target_reward_scaling[7]
+    #9
+    z_acc_penalty = -1.0 * root_lin_vel[2]**2 * target_reward_scaling[8]
+    #10
+    g = np.zeros(4, dtype=np.float64)
+    for i in range(4):
+        if np.sqrt(grnd_cfrc_ext[i, 3]**2 + grnd_cfrc_ext[i, 4]**2 + grnd_cfrc_ext[i, 5]**2) > 0.0:
+            g[i] = 1.0
+
+    foot_slip_penalty = 0.0
+    for i in range(4):
+        for j in range(3):
+            # g is (4,), feet_vel is (4, 3)
+            foot_slip_penalty -= (g[i] * feet_vel[i, j])**2
+    foot_slip_penalty *= target_reward_scaling[9]
+            
+    components = np.array([
+        forward_reward,
+        lat_mvmt_rot_penalty,
+        work_penalty,
+        ground_impact_penalty,
+        smoothness_penalty,
+        action_magnitude_penalty,
+        joint_speed_penalty,
+        orientation_penalty,
+        z_acc_penalty,
+        foot_slip_penalty
+    ])
+    
+    return components
+
 class RMAEnv(Wrapper):
     def __init__(self, 
                  env : gym.Env,
@@ -128,11 +190,11 @@ class RMAEnv(Wrapper):
         }
 
         self._env_params = {
-            'friction': copy(env.unwrapped.model.geom_friction[:, 0]),
-            'Kp': copy(env.unwrapped.model.actuator_gainprm[:, 0]),
-            'Kd': copy(env.unwrapped.model.dof_damping[6:]),
-            'mass': copy(env.unwrapped.model.body_mass),
-            'com': copy(env.unwrapped.model.body_ipos[self.trunk_id])
+            'friction': env.unwrapped.model.geom_friction[:, 0].copy(),
+            'Kp': env.unwrapped.model.actuator_gainprm[:, 0].copy(),
+            'Kd': env.unwrapped.model.dof_damping[6:].copy(),
+            'mass': env.unwrapped.model.body_mass.copy(),
+            'com': env.unwrapped.model.body_ipos[self.trunk_id].copy()
         }
 
         self.reward_scheduling = reward_scheduling
@@ -165,13 +227,13 @@ class RMAEnv(Wrapper):
         # crfc_ext 13 bodies * 6D vector (3 torque, 3 linear)
         cfrc_ext = obs[37:]
 
-        grnd_cfrc_ext = copy(self.env.unwrapped.data.cfrc_ext[self.foot_ids])
+        grnd_cfrc_ext = self.env.unwrapped.data.cfrc_ext[self.foot_ids].copy()
         # read torque from env
-        cur_torque = np.copy(self.env.unwrapped.data.actuator_force)
+        cur_torque = self.env.unwrapped.data.actuator_force.copy()
         # calculate gravity vector of the trunk
         grav_vec = self._calculate_gravity_vector(root_quat)
         # calculate foot velocities
-        feet_vel = copy(self.env.unwrapped.data.cvel[self.foot_ids][:, 3:])
+        feet_vel = self.env.unwrapped.data.cvel[self.foot_ids][:, 3:].copy()
 
         reward = self.calculate_reward(
             action,
@@ -199,14 +261,14 @@ class RMAEnv(Wrapper):
         ])
 
 
-        info.update({
-            'root_pos' : root_pos,
-            'root_quat': root_quat,
-            'root_lin_vel' : root_lin_vel,
-            'cfrc_ext' : cfrc_ext,
-            'torque' : cur_torque,
-            'feet_vel' : feet_vel,
-        })
+        # info.update({
+        #     'root_pos' : root_pos,
+        #     'root_quat': root_quat,
+        #     'root_lin_vel' : root_lin_vel,
+        #     'cfrc_ext' : cfrc_ext,
+        #     'torque' : cur_torque,
+        #     'feet_vel' : feet_vel,
+        # })
 
         self._obs_hist['last_joint_ang'] = joint_ang
         self._obs_hist['last_torque'] = cur_torque
@@ -234,14 +296,15 @@ class RMAEnv(Wrapper):
         cfrc_ext = obs[37:]
 
         # ground contact forces
-        grnd_cfrc_ext = copy(self.env.unwrapped.data.cfrc_ext[self.foot_ids])
+        grnd_cfrc_ext = self.env.unwrapped.data.cfrc_ext[self.foot_ids].copy()
         # read torque
-        cur_torque = np.copy(self.env.unwrapped.data.actuator_force)
+        cur_torque = self.env.unwrapped.data.actuator_force.copy()
         # calculate grav_vec
         grav_vec = self._calculate_gravity_vector(root_quat)
         # calculate foot velocities
-        feet_vel = copy(self.env.unwrapped.data.cvel[self.foot_ids][:, 3:])
+        feet_vel = self.env.unwrapped.data.cvel[self.foot_ids][:, 3:].copy()
         # zero init last_action
+
         self.last_action = np.zeros(12, dtype=np.float32)
 
         obs = np.concat([
@@ -252,14 +315,14 @@ class RMAEnv(Wrapper):
             self.last_action # 12
         ],)
 
-        info.update({
-            'root_pos' : root_pos,
-            'root_quat': root_quat,
-            'root_lin_vel' : root_lin_vel,
-            'cfrc_ext' : cfrc_ext,
-            'torque' : cur_torque,
-            'feet_vel' : feet_vel,
-        })
+        # info.update({
+        #     'root_pos' : root_pos,
+        #     'root_quat': root_quat,
+        #     'root_lin_vel' : root_lin_vel,
+        #     'cfrc_ext' : cfrc_ext,
+        #     'torque' : cur_torque,
+        #     'feet_vel' : feet_vel,
+        # })
 
         self._obs_hist['last_joint_ang'] = joint_ang
         self._obs_hist['last_torque'] = cur_torque
@@ -279,81 +342,21 @@ class RMAEnv(Wrapper):
             grav_vec,
             feet_vel,
     ) -> float:
-        #1
-        forward_reward = (
-            min(root_lin_vel[0], 0.35)    
-        ) 
-        #2
-        lat_mvmt_rot_penalty = (
-            -1 
-            * (
-                root_lin_vel[1]**2 
-                + root_ang_vel[2]**2
-            )
+        reward = _compute_reward_components(
+            action,
+            root_lin_vel,
+            root_ang_vel,
+            joint_ang,
+            joint_vel,
+            cur_torque,
+            grnd_cfrc_ext,
+            grav_vec,
+            feet_vel,
+            self._obs_hist['last_joint_ang'],
+            self._obs_hist['last_grnd_cfrc_ext'],
+            self._obs_hist['last_torque'],
+            self.target_reward_scaling
         )
-        #3
-        work_penalty = (
-            -1
-            * np.abs(np.dot(
-                cur_torque, 
-                (joint_ang - self._obs_hist['last_joint_ang'])
-            ))
-        )
-        #4
-        ground_impact_penalty = (
-            -1
-            *  np.linalg.norm(
-                grnd_cfrc_ext - self._obs_hist['last_grnd_cfrc_ext']
-            ) ** 2
-        ) 
-        #5
-        smoothness_penalty = (
-            -1
-            * np.linalg.norm(
-                cur_torque - self._obs_hist['last_torque']
-            ) ** 2
-        )
-        #6
-        action_magnitude_penalty = (
-            -1
-            * np.linalg.norm(action)**2
-        )
-        #7
-        joint_speed_penalty = (
-            -1
-            * np.linalg.norm(joint_vel) ** 2
-        )
-        #8
-        orientation_penalty = (
-            -1
-            * np.sum(grav_vec[:2]**2, axis=-1)
-        )
-        #9
-        z_acc_penalty = (
-            -1
-            * root_lin_vel[2] ** 2
-        )
-        #10
-        g = (np.linalg.norm(grnd_cfrc_ext[:, 3:], axis=-1) > 0).astype(np.float64)
-        foot_slip_penalty = (
-            -1
-            * np.linalg.norm(
-                np.diag(g) @ feet_vel #(4, 4) x (4, 3)
-            ) ** 2
-        )
-        
-        reward = self.target_reward_scaling * np.array((
-            forward_reward,
-            lat_mvmt_rot_penalty,
-            work_penalty,
-            ground_impact_penalty,
-            smoothness_penalty,
-            action_magnitude_penalty,
-            joint_speed_penalty,
-            orientation_penalty,
-            z_acc_penalty,
-            foot_slip_penalty
-        ))
 
         return self.reward_scheduling(reward)
     
@@ -376,7 +379,7 @@ class RMAEnv(Wrapper):
 
         if 'payload' in self.randomization_parameters:
             low, high = self.randomization_parameters['payload']
-            new_body_mass = copy(self._env_params['mass'])
+            new_body_mass = self._env_params['mass'].copy()
             new_body_mass[self.trunk_id] += np.random.uniform(low, high)
             model.body_mass[:] = new_body_mass
 

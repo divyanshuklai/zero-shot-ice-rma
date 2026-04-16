@@ -7,6 +7,7 @@ requires-python = ">=3.13.11"
 dependencies = [
     "gymnasium[mujoco,other]>=1.2.3",
     "mujoco>=3.4.0",
+    "numba>=0.65.0",
     "stable-baselines3[extra]>=2.7.1",
     "tensorboard>=2.20.0",
 ]
