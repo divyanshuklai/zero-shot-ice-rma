@@ -139,7 +139,7 @@ class RMAEnv(Wrapper):
                  randomization_parameters : dict = None,
                  seed : int = 42,
     ):
-        """
+        r"""
         outputs observation state R30
         takes in action vector of target joint positions $a_t \in \mathbb{R}^12$ 
 
