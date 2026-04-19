@@ -1,0 +1,18 @@
+[project]
+name = "zero-shot-ice-mjx"
+version = "0.1.0"
+description = "Zero-shot-ice MJX implementation"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mujoco-mjx>=3.7.0",
+    "jax[cuda]>=0.4.35",
+    "jaxlib>=0.4.35",
+    "brax>=0.11.0",
+    "flax>=0.8.0",
+    "optax>=0.2.1",
+    "numpy>=1.26.0",
+    "tensorboardX>=2.6.2",
+    "playground>=0.2.0",
+    "noise>=1.2.2",
+]

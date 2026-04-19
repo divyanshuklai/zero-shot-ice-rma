@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+out*
+models/
+runs/
+evals/
+RMA*
+*.log
+
+locomotion.ipynb
+test*
+
+*.png
