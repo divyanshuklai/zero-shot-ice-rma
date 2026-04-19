@@ -49,7 +49,7 @@ def get_default_model_name(args_dict, defaults_dict):
         )
     
     changed_params = []
-    skip_keys = {"model_name", "dr"}
+    skip_keys = {"model_name", "dr", "log_dir"}
     for key, default_val in defaults_dict.items():
         if key in skip_keys:
             continue
