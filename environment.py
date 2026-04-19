@@ -19,11 +19,27 @@ class RewardScheduleWrapper(brax_env.Wrapper):
 
     def reset(self, rng: jax.Array):
         state = self.env.reset(rng)
+        
+        batch_shape = state.reward.shape
+        
         info = state.info
-        info['curriculum_global_step'] = jp.zeros((), dtype=jp.int32)
+        info['curriculum_global_step'] = jp.zeros(batch_shape, dtype=jp.int32)
+        info['reward_k'] = jp.full(batch_shape, self.init_k, dtype=jp.float32)
         
         metrics = state.metrics
-        metrics['reward/rma_k'] = jp.asarray(self.init_k, dtype=jp.float32)
+        metrics['reward/rma_k'] = jp.full(batch_shape, self.init_k, dtype=jp.float32)
+        metrics['reward/rma_total'] = jp.zeros(batch_shape, dtype=jp.float32)
+        for idx in range(10):
+            metrics[f'reward/rma_component_{idx + 1}'] = jp.zeros(batch_shape, dtype=jp.float32)
+            metrics[f'reward/rma_component_{idx + 1}_scheduled'] = jp.zeros(batch_shape, dtype=jp.float32)
+            
+        if 'episode_metrics' in info:
+            info['episode_metrics']['reward/rma_k'] = jp.full(batch_shape, self.init_k, dtype=jp.float32)
+            info['episode_metrics']['reward/rma_total'] = jp.zeros(batch_shape, dtype=jp.float32)
+            for idx in range(10):
+                info['episode_metrics'][f'reward/rma_component_{idx + 1}'] = jp.zeros(batch_shape, dtype=jp.float32)
+                info['episode_metrics'][f'reward/rma_component_{idx + 1}_scheduled'] = jp.zeros(batch_shape, dtype=jp.float32)
+
         return state.replace(info=info, metrics=metrics)
 
     def step(self, state, action):
@@ -32,7 +48,7 @@ class RewardScheduleWrapper(brax_env.Wrapper):
         global_step = state.info['curriculum_global_step'] + 1
         
         if self.steps_per_iteration is None:
-            k = jp.asarray(self.init_k, dtype=jp.float32)
+            k = jp.full(next_state.reward.shape, self.init_k, dtype=jp.float32)
         else:
             num_envs = next_state.reward.shape[0] if len(next_state.reward.shape) > 0 else 1
             total_transitions = global_step * num_envs
@@ -42,9 +58,10 @@ class RewardScheduleWrapper(brax_env.Wrapper):
         components = next_state.info['rma_components']
         
         if len(components.shape) > 1:
+            k_expand = jax.lax.expand_dims(k, (1,)) if len(k.shape) == 1 else k
             scheduled_components = jp.concatenate([
                 components[:, :2],
-                components[:, 2:] * k,
+                components[:, 2:] * k_expand,
             ], axis=1)
             scheduled_reward = jp.sum(scheduled_components, axis=1)
             
@@ -54,9 +71,9 @@ class RewardScheduleWrapper(brax_env.Wrapper):
             
             metrics = next_state.metrics
             for idx in range(10):
-                metrics[f'reward/rma_component_{idx + 1}'] = jp.mean(components[:, idx])
-                metrics[f'reward/rma_component_{idx + 1}_scheduled'] = jp.mean(scheduled_components[:, idx])
-            metrics['reward/rma_total'] = jp.mean(scheduled_reward)
+                metrics[f'reward/rma_component_{idx + 1}'] = components[:, idx]
+                metrics[f'reward/rma_component_{idx + 1}_scheduled'] = scheduled_components[:, idx]
+            metrics['reward/rma_total'] = scheduled_reward
             metrics['reward/rma_k'] = k
         else:
             scheduled_components = jp.concatenate([
