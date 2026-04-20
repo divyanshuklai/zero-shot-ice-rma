@@ -136,6 +136,7 @@ DEFAULTS = dict(
     dr=False,
     model_name="",
     log_dir=".",
+    num_evals=20,
 )
 
 def get_default_model_name(args_dict, defaults_dict):
@@ -199,6 +200,7 @@ def parse_args():
     parser.add_argument("--dr", action=argparse.BooleanOptionalAction, default=DEFAULTS["dr"])
     parser.add_argument("--model-name", type=str, default=DEFAULTS["model_name"])
     parser.add_argument("--log-dir", type=str, default=DEFAULTS["log_dir"])
+    parser.add_argument("--num-evals", type=int, default=DEFAULTS["num_evals"])
 
     args = parser.parse_args()
     args_dict = vars(args)
@@ -289,11 +291,11 @@ def main():
         environment=env,
         eval_env=eval_env,
         num_timesteps=args.n_iterations * steps_per_iteration,
-        num_evals=args.n_iterations + 1,
+        num_evals=args.num_evals,
         episode_length=1000,
         num_envs=args.n_envs,
         unroll_length=unroll_length,
-        batch_size=(unroll_length * args.n_envs) // args.n_minibatches,
+        batch_size=args.n_envs // args.n_minibatches,
         num_minibatches=args.n_minibatches,
         num_updates_per_batch=args.n_epochs,
         learning_rate=args.learning_rate,

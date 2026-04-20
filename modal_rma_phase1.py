@@ -47,6 +47,8 @@ def run_phase1(
         "--n-iterations", str(n_iterations),
         "--batch-size-total", str(batch_size_total),
         "--n-envs", "8192",
+        "--n-minibatches", "16",
+        "--num-evals", "21",
         "--log-dir", log_dir,
         "--learning-rate", str(lr),
         "--dr" if dr else "--no-dr",
@@ -67,7 +69,7 @@ def run_phase1(
         sys.exit(process.returncode)
 
 @app.local_entrypoint()
-def main(n_iterations: int = 15000, batch_size_total: int = 80000, model_name: str = None):
+def main(n_iterations: int = 5000, batch_size_total: int = 262144, model_name: str = "modal_rma_phase1"):
     run_phase1.remote(
         n_iterations=n_iterations,
         batch_size_total=batch_size_total,

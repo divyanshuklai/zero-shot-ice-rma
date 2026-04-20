@@ -48,7 +48,8 @@ def run_phase2(
         "--teacher-model-path", teacher_model_path,
         "--n-iterations", str(n_iterations),
         "--batch-size-total", str(batch_size_total),
-        "--n-envs", "4096",
+        "--n-envs", "8192",
+        "--n-minibatches", "16",
         "--log-dir", log_dir,
         "--learning-rate", str(lr),
         "--dr" if dr else "--no-dr",
@@ -72,8 +73,8 @@ def run_phase2(
 def main(
     teacher_model: str, 
     n_iterations: int = 2000, 
-    batch_size_total: int = 80000, 
-    model_name: str = None
+    batch_size_total: int = 262144, 
+    model_name: str = "modal_rma_phase2"
 ):
     """
     To run: modal run modal_rma_phase2.py --teacher-model <name_of_p1_model>
