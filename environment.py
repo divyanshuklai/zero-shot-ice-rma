@@ -6,6 +6,22 @@ from mujoco_playground._src import wrapper as mjx_wrapper
 from brax.envs import base as brax_env
 from mujoco import mjx
 
+import contextlib
+from mujoco_playground._src.wrapper import BraxDomainRandomizationVmapWrapper
+
+# Monkey-patch BraxDomainRandomizationVmapWrapper to not bypass wrappers
+@contextlib.contextmanager
+def patched_v_env_fn(self, mjx_model):
+    env = self.env # Use self.env instead of self.env.unwrapped!
+    old_mjx_model = env.unwrapped._mjx_model
+    try:
+        env.unwrapped._mjx_model = mjx_model
+        yield env
+    finally:
+        env.unwrapped._mjx_model = old_mjx_model
+
+BraxDomainRandomizationVmapWrapper.v_env_fn = patched_v_env_fn
+
 class RewardScheduleWrapper(brax_env.Wrapper):
     """
     Wraps the Brax environment OUTSIDE the vectorization/auto-reset boundaries to tracking the true global step

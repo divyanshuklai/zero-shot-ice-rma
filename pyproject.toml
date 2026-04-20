@@ -15,4 +15,5 @@ dependencies = [
     "tensorboardX>=2.6.2",
     "playground>=0.2.0",
     "noise>=1.2.2",
+    "modal>=1.4.2",
 ]

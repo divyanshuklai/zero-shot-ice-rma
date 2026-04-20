@@ -1,5 +1,5 @@
 """
-baseline.py --> DR only training on the training environment.
+rma_phase1 --> training teacher policy and priviledged extrinsics encoder.
 """
 
 import os
@@ -9,8 +9,111 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from environment import build_environment
-from brax.training.agents.ppo import train as ppo
+from brax.envs import base as brax_env
+import jax.numpy as jnp
 from brax.io import model as brax_model
+from brax.training.agents.ppo import train as ppo
+from brax.training.agents.ppo import networks as ppo_networks
+
+class TeacherObservationWrapper(brax_env.Wrapper):
+    """
+    Concatenates proprioceptive and privileged observations for PPO.
+    The Teacher policy in the network will split them back.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        # observation_size might be a tuple or dict depending on wrapping
+        self.proprio_size = 48
+        self.privileged_size = 123
+
+    @property
+    def observation_size(self):
+        return self.proprio_size + self.privileged_size
+
+    def reset(self, rng: jax.Array):
+        state = self.env.reset(rng)
+        # state.obs is already a dict from RMAWrapper
+        obs = jnp.concatenate([state.obs, state.info["privileged_state"]], axis=-1)
+        return state.replace(obs=obs)
+
+    def step(self, state, action):
+        # Inner env might use scan (e.g. ActionRepeatWrapper).
+        # We must restore the obs shape to what inner env expects to avoid scan carry shape mismatch.
+        state = state.replace(obs=state.obs[..., :self.proprio_size])
+        state = self.env.step(state, action)
+        obs = jnp.concatenate([state.obs, state.info["privileged_state"]], axis=-1)
+        return state.replace(obs=obs)
+
+def make_teacher_ppo_networks(
+    observation_size: int,
+    action_size: int,
+    
+    proprio_size: int = 48,
+    latent_size: int = 8,
+):
+    from rma import TeacherEncoder, TeacherNetwork
+    from brax.training import types, distribution
+    from brax.training.networks import FeedForwardNetwork
+    import flax.linen as nn
+    import jax.numpy as jnp
+
+    parametric_action_distribution = distribution.NormalDistribution(event_size=action_size)
+
+    class TeacherPolicy(nn.Module):
+        @nn.compact
+        def __call__(self, x):
+            proprio = x[..., :proprio_size]
+            privileged = x[..., proprio_size:]
+            
+            z = TeacherEncoder(latent_size=latent_size)(privileged)
+            logits, _ = TeacherNetwork(action_size=action_size)(proprio, z)
+            
+            log_std = self.param('log_std', nn.initializers.constant(-1.0), (action_size,))
+            std = jnp.exp(log_std)
+            std = jnp.broadcast_to(std, logits.shape)
+            
+            return logits, std
+
+    class TeacherValue(nn.Module):
+        @nn.compact
+        def __call__(self, x):
+            proprio = x[..., :proprio_size]
+            privileged = x[..., proprio_size:]
+            
+            z = TeacherEncoder(latent_size=latent_size)(privileged)
+            _, value = TeacherNetwork(action_size=action_size)(proprio, z)
+            
+            return value
+
+    policy_module = TeacherPolicy()
+    value_module = TeacherValue()
+    
+    if isinstance(observation_size, int):
+        obs_shape = (observation_size,)
+    else:
+        obs_shape = tuple(observation_size)
+    dummy_obs = jnp.zeros((1,) + obs_shape)
+
+    def policy_init(key):
+        return policy_module.init(key, dummy_obs)
+
+    def policy_apply(processor_params, policy_params, obs):
+        return policy_module.apply(policy_params, obs)
+
+    def value_init(key):
+        return value_module.init(key, dummy_obs)
+
+    def value_apply(processor_params, value_params, obs):
+        return value_module.apply(value_params, obs)
+
+    policy_network = FeedForwardNetwork(init=policy_init, apply=policy_apply)
+    value_network = FeedForwardNetwork(init=value_init, apply=value_apply)
+
+    return ppo_networks.PPONetworks(
+        policy_network=policy_network,
+        value_network=value_network,
+        parametric_action_distribution=parametric_action_distribution,
+    )
 
 DEFAULTS = dict(
     seed=42,
@@ -33,7 +136,6 @@ DEFAULTS = dict(
     dr=False,
     model_name="",
     log_dir=".",
-    num_evals=20,
 )
 
 def get_default_model_name(args_dict, defaults_dict):
@@ -68,7 +170,7 @@ def get_default_model_name(args_dict, defaults_dict):
     ]
     run_number = len(existing) + 1
     
-    return f"baseline_mjx_{run_number}_{date_str}_{suffix}"
+    return f"rma_phase1_mjx_{run_number}_{date_str}_{suffix}"
 
 
 def parse_args():
@@ -97,7 +199,6 @@ def parse_args():
     parser.add_argument("--dr", action=argparse.BooleanOptionalAction, default=DEFAULTS["dr"])
     parser.add_argument("--model-name", type=str, default=DEFAULTS["model_name"])
     parser.add_argument("--log-dir", type=str, default=DEFAULTS["log_dir"])
-    parser.add_argument("--num-evals", type=int, default=DEFAULTS["num_evals"])
 
     args = parser.parse_args()
     args_dict = vars(args)
@@ -144,6 +245,7 @@ def main():
     import jax.numpy as jnp
     from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
     import numpy as np
+    from brax.envs import base as brax_env
 
     def _device_put_replicated_mock(x, devices):
         mesh = Mesh(np.array(devices), ('x',))
@@ -165,6 +267,7 @@ def main():
         num_envs=args.n_envs,
         reward_schedule_steps_per_iteration=steps_per_iteration,
     )
+    env = TeacherObservationWrapper(env)
 
     eval_env = build_environment(
         flat=args.flat,
@@ -176,16 +279,21 @@ def main():
         num_envs=128,
         reward_schedule_steps_per_iteration=None,
     )
+    eval_env = TeacherObservationWrapper(eval_env)
+
+    ppo_networks_factory = lambda obs_size, act_size, **kwargs: make_teacher_ppo_networks(
+        obs_size, act_size, proprio_size=48, latent_size=8
+    )
 
     make_inference_fn, params, metrics = ppo.train(
         environment=env,
         eval_env=eval_env,
         num_timesteps=args.n_iterations * steps_per_iteration,
-        num_evals=args.num_evals,
+        num_evals=args.n_iterations + 1,
         episode_length=1000,
         num_envs=args.n_envs,
         unroll_length=unroll_length,
-        batch_size=args.n_envs // args.n_minibatches,
+        batch_size=(unroll_length * args.n_envs) // args.n_minibatches,
         num_minibatches=args.n_minibatches,
         num_updates_per_batch=args.n_epochs,
         learning_rate=args.learning_rate,
@@ -196,6 +304,7 @@ def main():
         randomization_fn=None,
         wrap_env=False,
         progress_fn=progress,
+        network_factory=ppo_networks_factory,
         policy_params_fn=policy_params_fn,
     )
 
